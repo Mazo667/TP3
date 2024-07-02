@@ -35,15 +35,132 @@
 int arp_count = 0, icmp_count = 0, ip_count = 0, udp_count = 0, tcp_count = 0;
 pthread_mutex_t count_mutex;
 
-// Función que se ejecutará cada vez que se capture una trama en tiempo real
-void *print_stats(void *arg) {
-    while (1) {
-        sleep(1);
-        pthread_mutex_lock(&count_mutex);
-        printf("ARP: %d, ICMP: %d, IP: %d, UDP: %d, TCP: %d\n", arp_count, icmp_count, ip_count, udp_count, tcp_count);
-        pthread_mutex_unlock(&count_mutex);
+void got_packet(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *packet);
+void *print_stats(void *arg);
+
+
+// Definición del manejador de señales
+void sig_int(int sig) {
+    printf("\n---Señal de interrupción recibida---\n");
+    printf("Datos Estadisticos Finales: \n");
+    printf("   Tramas capturadas de tipo ARP: %d\n", arp_count);
+    printf("   Tramas capturadas de tipo IP: %d\n", ip_count);
+    printf("   Tramas capturadas de tipo ICMP: %d\n", icmp_count);
+    printf("   Tramas capturadas de tipo UDP: %d\n", udp_count);
+    printf("   Tramas capturadas de tipo TCP: %d\n", tcp_count);
+
+    pthread_mutex_destroy(&count_mutex); // Destruye el mutex
+    exit(0); // Usamos _exit aquí para terminar inmediatamente el proceso
+}
+
+/* El programa tomara como parametro obligatorio de llamada el numero maximo de tramas que 
+   capturara antes de finalizar. Si este parametro es 0, el programa se ejecutara indefinidimanete
+   hasta que sea interrumpiudo por el usuario al pulsar ctrl-c  */
+
+int main(int argc, char* argv[]){
+    pcap_if_t *alldevs; // Lista de dispositivos
+    char errbuf[PCAP_ERRBUF_SIZE]; // Buffer de error
+    int num_packets; // Numero de tramas a capturar
+    pcap_t *handle; // Descriptor de la interfaz
+
+    // Verifica si se ingreso el numero de tramas a capturar
+    if(argc != 2){
+        printf("Para ejecutar correctamente ingrese: <numero de tramas a capturar>\n");
+        return 1;
+    } else if (atoi(argv[1]) > 10 || atoi(argv[1]) < 0){
+        printf("El numero de tramas a capturar debe ser un numero positivo menor o igual a 10\n");
+        return 1;
     }
-    return NULL;
+
+    // Asignar el numero de tramas a capturar
+    num_packets = atoi(argv[1]);
+
+    // Intenta encontrar todos los dispositivos
+    if (pcap_findalldevs(&alldevs, errbuf) == -1) {
+        printf("Error: %s\n", errbuf);
+        return 1;
+    }
+
+    // Verifica si se encontraron dispositivos
+    if (alldevs == NULL) {
+        printf("No se encontraron dispositivos. Asegúrate de tener permisos adecuados.\n");
+        return 1;
+    }
+
+    char *device; // Dispositivo
+
+    // Obtiene el nombre del primer dispositivo
+    device = alldevs->name;
+
+    // Imprime el primer dispositivo encontrado
+    printf("Dispositivo: %s\n", device);
+
+    //Una vez que tenemos una interfaz, podemos abrir la interfaz para capturar paquetes
+    handle = pcap_open_live (device,  // Dispositivo a capturar
+                            BUFSIZ,   // Numero maximo de bytes a capturar por trama
+                            1,        // 1 modo Promiscuo y 0 modo no promiscuo
+                            1000,        // 1 = tiempo de espera en milisegundos, 0 = infinito
+                            errbuf);  // Buffer de error si paso algo mal
+
+    if (handle == NULL) { // Verifica si hubo un error al abrir la interfaz
+        fprintf (stderr, "%s", errbuf);
+        exit (1);
+    }
+
+    if (strlen (errbuf) < 1) { // Verifica si hubo un warning
+        fprintf (stderr, "Warning: %s", errbuf);  /* a warning was generated */
+        errbuf[0] = 0;    /* reset error buffer */
+    }
+
+    if (pcap_datalink (handle) != DLT_EN10MB) { // Verifica si la interfaz de tipo Ethernet
+        fprintf (stderr, "This program only supports Ethernet cards!\n");
+        exit (1);
+    }
+
+    /* Declaro variables para imprimir la Direccion de Red y de Mascara */
+    bpf_u_int32 net;		/* ip */
+    bpf_u_int32 mask;		/* Mascara */
+
+    // Obtiene la direccion de red y la mascara
+    if (pcap_lookupnet (device, &net, &mask, errbuf) == -1){
+      fprintf (stderr, "%s", errbuf);
+      exit (1);
+    }
+    
+    // Imprime la direccion de red y la mascara
+    printf("Direccion de red: %s\n", inet_ntoa(*(struct in_addr *)&net));
+    printf("Mascara Subred: %s\n", inet_ntoa(*(struct in_addr *)&mask));
+
+    signal(SIGINT, sig_int); // Manejador de señales
+
+    /* HILOS */
+
+    // Inicializar el mutex
+    pthread_mutex_init(&count_mutex, NULL);
+
+    // Crear un hilo para mostrar las estadísticas en tiempo real
+    pthread_t stats_thread;
+    pthread_create(&stats_thread, NULL, print_stats, NULL);
+
+    // Verifica si el parametro es 0, si es 0 se ejecutara indefinidamente si no se ejecutara el numero de tramas ingresado
+    if(strlen(argv[1]) == 0){
+        pcap_loop(handle, 0 , got_packet, NULL);
+    }else if (strlen(argv[1]) <= 10 || strlen(argv[1]) >= 1){
+        pcap_loop(handle, num_packets, got_packet, NULL);
+    }
+
+	printf("\nDatos Estadisticos Finales: \n");
+    printf("Tramas capturadas de tipo ARP: %d\n", arp_count);
+    printf("Tramas capturadas de tipo ICMP: %d\n", icmp_count);
+    printf("Tramas capturadas de tipo IP: %d\n", ip_count);
+    printf("Tramas capturadas de tipo UDP: %d\n", udp_count);
+    printf("Tramas capturadas de tipo TCP: %d\n", tcp_count);
+    
+    pcap_close(handle); // Cierra el descriptor de la interfaz
+
+    pthread_mutex_destroy(&count_mutex); // Destruye el mutex
+
+    return 0;
 }
 
 // Función que se ejecutará cada vez que se capture una trama
@@ -51,6 +168,9 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
     // Primero, obtenemos la cabecera Ethernet
     struct ether_header *eth_header;
     eth_header = (struct ether_header *) packet;
+
+    // Bloquea el mutex para evitar condiciones de carrera
+    pthread_mutex_lock(&count_mutex);
 
     // Verificamos el tipo de protocolo (IP, ARP, etc.)
     if (ntohs(eth_header->ether_type) == ETHERTYPE_IP) {
@@ -137,133 +257,19 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
     } else {
         printf("\n-----Tipo de paquete no solicitado-----\n");
     }
+
+    pthread_mutex_unlock(&count_mutex); // Desbloquea el mutex
 }
 
-// Definición del manejador de señales
-void sig_int(int sig) {
-    printf("\n---Señal de interrupción recibida---\n");
-    printf("Datos Estadisticos Finales: \n");
-    printf("   Tramas capturadas de tipo ARP: %d\n", arp_count);
-    printf("   Tramas capturadas de tipo IP: %d\n", ip_count);
-    printf("   Tramas capturadas de tipo ICMP: %d\n", icmp_count);
-    printf("   Tramas capturadas de tipo UDP: %d\n", udp_count);
-    printf("   Tramas capturadas de tipo TCP: %d\n", tcp_count);
-
-    pthread_mutex_destroy(&count_mutex); // Destruye el mutex
-    exit(0); // Usamos _exit aquí para terminar inmediatamente el proceso
-}
-
-
-/* El programa tomara como parametro obligatorio de llamada el numero maximo de tramas que 
-   capturara antes de finalizar. Si este parametro es 0, el programa se ejecutara indefinidimanete
-   hasta que sea interrumpiudo por el usuario al pulsar ctrl-c  */
-
-int main(int argc, char* argv[]){
-    pcap_if_t *alldevs; // Lista de dispositivos
-    char errbuf[PCAP_ERRBUF_SIZE]; // Buffer de error
-    int num_packets; // Numero de tramas a capturar
-
-    // Verifica si se ingreso el numero de tramas a capturar
-    if(argc != 2){
-        printf("Para ejecutar correctamente ingrese: <numero de tramas a capturar>\n");
-        return 1;
-    } else if (atoi(argv[1]) > 10 || atoi(argv[1]) < 0){
-        printf("El numero de tramas a capturar debe ser un numero positivo menor o igual a 10\n");
-        return 1;
+// Función que se ejecutará cada vez que se capture una trama en tiempo real
+void *print_stats(void *arg) {
+    while (1) {
+        sleep(1);
+        pthread_mutex_lock(&count_mutex);
+        printf("-------------------------------------------\n");
+        printf("ARP: %d, ICMP: %d, IP: %d, UDP: %d, TCP: %d\n", arp_count, icmp_count, ip_count, udp_count, tcp_count);
+        printf("-------------------------------------------\n");
+        pthread_mutex_unlock(&count_mutex);
     }
-
-    // Asignar el numero de tramas a capturar
-    num_packets = atoi(argv[1]);
-
-    // Intenta encontrar todos los dispositivos
-    if (pcap_findalldevs(&alldevs, errbuf) == -1) {
-        printf("Error: %s\n", errbuf);
-        return 1;
-    }
-
-    // Verifica si se encontraron dispositivos
-    if (alldevs == NULL) {
-        printf("No se encontraron dispositivos. Asegúrate de tener permisos adecuados.\n");
-        return 1;
-    }
-
-    char *device; // Dispositivo
-
-    // Obtiene el nombre del primer dispositivo
-    device = alldevs->name;
-
-    // Imprime el primer dispositivo encontrado
-    printf("Dispositivo: %s\n", device);
-
-    //Una vez que tenemos una interfaz, podemos abrir la interfaz para capturar paquetes
-    pcap_t *handle; // Descriptor de la interfaz
-
-    handle = pcap_open_live (device,  // Dispositivo a capturar
-                            BUFSIZ,   // Numero maximo de bytes a capturar por trama
-                            1,        // 1 modo Promiscuo y 0 modo no promiscuo
-                            0,        // 1 = tiempo de espera en milisegundos, 0 = infinito
-                            errbuf);  // Buffer de error si paso algo mal
-
-    if (handle == NULL) { // Verifica si hubo un error al abrir la interfaz
-        fprintf (stderr, "%s", errbuf);
-        exit (1);
-    }
-
-    if (strlen (errbuf) < 1) { // Verifica si hubo un warning
-        fprintf (stderr, "Warning: %s", errbuf);  /* a warning was generated */
-        errbuf[0] = 0;    /* reset error buffer */
-    }
-
-    if (pcap_datalink (handle) != DLT_EN10MB) { // Verifica si la interfaz de tipo Ethernet
-        fprintf (stderr, "This program only supports Ethernet cards!\n");
-        exit (1);
-    }
-
-    /* Declaro variables para imprimir la Direccion de Red y de Mascara */
-    bpf_u_int32 net;		/* ip */
-    bpf_u_int32 mask;		/* Mascara */
-    char *net_addr;        
-    struct in_addr addr;
-
-    // Obtiene la direccion de red y la mascara
-    if (pcap_lookupnet (device, &net, &mask, errbuf) == -1){
-      fprintf (stderr, "%s", errbuf);
-      exit (1);
-    }
-    
-    // Imprime la direccion de red y la mascara
-    printf("Direccion de red: %s\n", inet_ntoa(*(struct in_addr *)&net));
-    printf("Mascara Subred: %s\n", inet_ntoa(*(struct in_addr *)&mask));
-
-    /* HILOS */
-
-    // Inicializar el mutex
-    pthread_mutex_init(&count_mutex, NULL);
-
-    // Crear un hilo para mostrar las estadísticas en tiempo real
-    pthread_t stats_thread;
-    pthread_create(&stats_thread, NULL, print_stats, NULL);
-
-
-    signal(SIGINT, sig_int); // Manejador de señales
-
-    // Verifica si el parametro es 0, si es 0 se ejecutara indefinidamente si no se ejecutara el numero de tramas ingresado
-    if(strlen(argv[1]) == 0){
-        pcap_loop(handle, -1 , got_packet, NULL);
-    }else if (strlen(argv[1]) <= 10 || strlen(argv[1]) >= 1){
-        pcap_loop(handle, num_packets, got_packet, NULL);
-    }
-
-	printf("\nDatos Estadisticos Finales: \n");
-    printf("Tramas capturadas de tipo ARP: %d\n", arp_count);
-    printf("Tramas capturadas de tipo ICMP: %d\n", icmp_count);
-    printf("Tramas capturadas de tipo IP: %d\n", ip_count);
-    printf("Tramas capturadas de tipo UDP: %d\n", udp_count);
-    printf("Tramas capturadas de tipo TCP: %d\n", tcp_count);
-    
-    pcap_close(handle); // Cierra el descriptor de la interfaz
-
-    pthread_mutex_destroy(&count_mutex); // Destruye el mutex
-
-    return 0;
+    return NULL;
 }
