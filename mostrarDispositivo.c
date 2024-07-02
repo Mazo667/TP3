@@ -1,4 +1,4 @@
-// Compile: gcc -o mostrarDispositivo mostrarDispositivo.c -lpcap
+// Compile: gcc mostrarDispositivo.c -o mostrarDispositivo -lpcap
 
 /*
 struct pcap_if{           //Estructura de una interfaz

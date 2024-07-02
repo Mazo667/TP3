@@ -78,7 +78,7 @@ process_packet (u_char * args, const struct pcap_pkthdr *header,
   }
 
   printf ("Source: %d.%d.%d.%d\t\tDestination: %d.%d.%d.%d\n",
-      arp_packet->arp_spa[0],
+    arp_packet->arp_spa[0],
     arp_packet->arp_spa[1],
     arp_packet->arp_spa[2],
     arp_packet->arp_spa[3],
