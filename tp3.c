@@ -37,6 +37,7 @@ pthread_mutex_t count_mutex;
 
 void got_packet(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *packet);
 void *print_stats(void *arg);
+void print_devices(pcap_if_t *alldevs);
 
 
 // Definición del manejador de señales
@@ -51,6 +52,15 @@ void sig_int(int sig) {
 
     pthread_mutex_destroy(&count_mutex); // Destruye el mutex
     exit(0); // Usamos _exit aquí para terminar inmediatamente el proceso
+}
+
+// Definición de la función para contar dispositivos
+int pcap_count_devices(pcap_if_t *alldevs) {
+    int count = 0;
+    for (pcap_if_t *d = alldevs; d != NULL; d = d->next) {
+        count++;
+    }
+    return count;
 }
 
 /* El programa tomara como parametro obligatorio de llamada el numero maximo de tramas que 
@@ -89,33 +99,46 @@ int main(int argc, char* argv[]){
 
     char *device; // Dispositivo
 
-    // Obtiene el nombre del primer dispositivo
-    device = alldevs->name;
+    print_devices(alldevs); // Imprimo todos los dispositivos
 
-    // Imprime el primer dispositivo encontrado
-    printf("Dispositivo: %s\n", device);
+    // El usuario selecciona un dispositivo
+    int selection;
+    printf("Seleccione un dispositivo (ingrese el número correspondiente): ");
+    scanf("%d", &selection);
+
+    // Verifica si la selección está dentro del rango válido
+    if (selection < 1 || selection > pcap_count_devices(alldevs)) {
+        printf("Selección inválida\n");
+        return 1;
+    }
+
+    // Obtener el dispositivo seleccionado
+    pcap_if_t *selected_device = alldevs;
+    for (int i = 1; i < selection; i++) {
+        selected_device = selected_device->next;
+    }
+
+    // Asignar el nombre del dispositivo seleccionado
+    device = selected_device->name;
+
+    /* Nombres de dispositivos comunes en Linux: eth0, eth1, enp0s3, wlp2s0 */	
+
+    // Validar que el dispositivo seleccionado sea de tipo Ethernet
+    if (strncmp(device, "eth", 3) != 0 && strncmp(device, "enp", 3) != 0 && strncmp(device, "wlp", 3) != 0){
+        printf("No se puede seleccionar un dispositivo que no sea de tipo Ethernet\n");
+        return 1;
+    }
+
+    // Imprime el  dispositivo seleccionado
+    printf("Dispositivo seleccionado: (%s)\n", device);
 
     //Una vez que tenemos una interfaz, podemos abrir la interfaz para capturar paquetes
     handle = pcap_open_live (device,  // Dispositivo a capturar
                             BUFSIZ,   // Numero maximo de bytes a capturar por trama
                             1,        // 1 modo Promiscuo y 0 modo no promiscuo
-                            1000,        // 1 = tiempo de espera en milisegundos, 0 = infinito
+                            1000,     // 1 = tiempo de espera en milisegundos, 0 = infinito
                             errbuf);  // Buffer de error si paso algo mal
 
-    if (handle == NULL) { // Verifica si hubo un error al abrir la interfaz
-        fprintf (stderr, "%s", errbuf);
-        exit (1);
-    }
-
-    if (strlen (errbuf) < 1) { // Verifica si hubo un warning
-        fprintf (stderr, "Warning: %s", errbuf);  /* a warning was generated */
-        errbuf[0] = 0;    /* reset error buffer */
-    }
-
-    if (pcap_datalink (handle) != DLT_EN10MB) { // Verifica si la interfaz de tipo Ethernet
-        fprintf (stderr, "This program only supports Ethernet cards!\n");
-        exit (1);
-    }
 
     /* Declaro variables para imprimir la Direccion de Red y de Mascara */
     bpf_u_int32 net;		/* ip */
@@ -162,6 +185,7 @@ int main(int argc, char* argv[]){
 
     return 0;
 }
+
 
 // Función que se ejecutará cada vez que se capture una trama
 void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
@@ -272,4 +296,13 @@ void *print_stats(void *arg) {
         pthread_mutex_unlock(&count_mutex);
     }
     return NULL;
+}
+
+// Función para imprimir los dispositivos de red
+void print_devices(pcap_if_t *alldevs) {
+    pcap_if_t *device;
+    int i = 0;
+    for (device = alldevs; device; device = device->next) {
+        printf("%d: %s\n", ++i, device->name);
+    }
 }
